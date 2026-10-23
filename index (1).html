@@ -1,0 +1,478 @@
+<!doctype html><html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom)}body{margin:0;font:14px system-ui,sans-serif}img{max-width:100%}[hidden]{display:none!important}</style></head><body><title>Shot Clock WNT</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700;800&family=Be+Vietnam+Pro:wght@400;500;600;700&display=swap">
+<style>
+/* Layout: arena scoreboard — two player plates up top, one dominant clock dial, a thumb-reach control deck below. Deliberately single dark theme (scoreboard under hall lights). */
+:root{
+  --ink:#0d1320;          /* hall dark */
+  --plate:#161f31;        /* player plates */
+  --plate-2:#1e2a42;
+  --line:#2a3854;
+  --chalk:#e9eef7;        /* text */
+  --mute:#8592ab;
+  --cue:#f2b23a;          /* amber accent, scoreboard bulbs */
+  --warn:#ff8a3d;
+  --crit:#ff4d5a;
+  --ok:#3ccf8e;
+  --display:"Barlow Condensed","Arial Narrow",Impact,sans-serif;
+  --body:"Be Vietnam Pro",system-ui,-apple-system,"Segoe UI",sans-serif;
+  color-scheme:dark;
+}
+html,body{height:100%}
+body{background:var(--ink);color:var(--chalk);font-family:var(--body);margin:0;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));
+  -webkit-tap-highlight-color:transparent;user-select:none;-webkit-user-select:none}
+.app{max-width:760px;margin:0 auto;min-height:100%;display:flex;flex-direction:column;gap:14px;padding-block:14px 18px;box-sizing:border-box}
+header{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px 12px}
+.brand{font-family:var(--display);font-weight:700;letter-spacing:.14em;text-transform:uppercase;font-size:15px;color:var(--mute)}
+.brand b{color:var(--cue)}
+.icon-btn{background:transparent;border:1px solid var(--line);color:var(--chalk);border-radius:10px;height:38px;padding:0 12px;font:600 13px var(--body);cursor:pointer;display:inline-flex;align-items:center;gap:6px}
+.icon-btn[aria-pressed="false"]{color:var(--mute)}
+
+/* players */
+.players{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.player{background:var(--plate);border:2px solid transparent;border-radius:14px;padding:12px 12px 10px;display:flex;flex-direction:column;gap:8px;cursor:pointer;min-width:0;transition:border-color .2s,background .2s}
+.player.active{border-color:var(--cue);background:var(--plate-2)}
+.p-top{display:flex;align-items:center;gap:8px;min-width:0}
+.turn-dot{width:9px;height:9px;border-radius:50%;background:var(--line);flex:none}
+.player.active .turn-dot{background:var(--cue);box-shadow:0 0 10px var(--cue)}
+.p-name{flex:1;min-width:0;background:transparent;border:0;color:var(--chalk);font:600 15px var(--body);padding:2px 0;outline:none;text-overflow:ellipsis}
+.p-name:focus{border-bottom:1px solid var(--cue)}
+.p-mid{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.score{font-family:var(--display);font-weight:800;font-size:52px;line-height:.9;font-variant-numeric:tabular-nums}
+.score-btns{display:flex;gap:6px}
+.sbtn{width:34px;height:34px;border-radius:9px;border:1px solid var(--line);background:transparent;color:var(--chalk);font:700 18px var(--body);cursor:pointer}
+.ext{display:flex;align-items:center;gap:7px;font:500 12px var(--body);color:var(--mute);letter-spacing:.02em}
+.ext .pip{font-family:var(--display);font-weight:700;font-size:13px;letter-spacing:.06em;padding:2px 7px;border-radius:5px;background:var(--cue);color:var(--ink)}
+.ext.used .pip{background:transparent;color:var(--mute);border:1px dashed var(--line);text-decoration:line-through}
+
+/* hoàn tác */
+let undoSnap=null;
+function snap(){
+  undoSnap={active:S.active,ext:S.players.map(p=>p.ext),remaining:S.running?Math.max(0,S.endAt-performance.now()):S.remaining,
+    total:S.total,long:S.long,longLabel:S.longLabel,extendedThisShot:S.extendedThisShot,running:S.running,out:S.out,at:performance.now()};
+}
+function undo(){
+  if(!undoSnap){showHeard('Chưa có thao tác nào để hoàn tác');return}
+  const u=undoSnap;undoSnap=null;
+  S.active=u.active;S.players.forEach((p,i)=>p.ext=u.ext[i]);
+  S.total=u.total;S.long=u.long;S.longLabel=u.longLabel;S.extendedThisShot=u.extendedThisShot;S.out=u.out;S.lastBeep=null;
+  // thời gian vẫn trôi trong lúc bị nhầm, nên trừ đi nếu đồng hồ đang chạy
+  S.remaining=u.running?Math.max(0,u.remaining-(performance.now()-u.at)):u.remaining;
+  S.running=false;save();renderPlayers();
+  tone(784,.12,0,'sine');tone(523,.25,.12,'sine');
+  if(u.running&&S.remaining>0)start(true);else draw();
+}
+
+/* clock */
+.clock-wrap{flex:1;display:flex;align-items:center;justify-content:center;min-height:260px}
+.dial{position:relative;width:min(78vw,52vh,420px);aspect-ratio:1;max-width:100%;border:0;background:transparent;padding:0;cursor:pointer;color:inherit;border-radius:50%}
+.dial svg{position:absolute;inset:0;width:100%;height:100%;transform:rotate(-90deg)}
+.track{fill:none;stroke:var(--plate-2);stroke-width:7}
+.prog{fill:none;stroke:var(--cue);stroke-width:7;stroke-linecap:round;transition:stroke .2s}
+.ticks line{stroke:var(--line);stroke-width:1.2}
+.dial-inner{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px}
+.mode{font:600 12px var(--body);letter-spacing:.16em;text-transform:uppercase;color:var(--mute)}
+.secs{font-family:var(--display);font-weight:800;font-size:clamp(110px,26vw,190px);line-height:.85;font-variant-numeric:tabular-nums;color:var(--chalk);transition:color .2s}
+.hint{font:500 13px var(--body);color:var(--mute);min-height:1.3em;text-align:center;padding:0 18%}
+.dial.warn .prog{stroke:var(--warn)} .dial.warn .secs{color:var(--warn)}
+.dial.crit .prog{stroke:var(--crit)} .dial.crit .secs{color:var(--crit)}
+.dial.crit.running .secs{animation:pulse 1s steps(2) infinite}
+.dial.out .secs{color:var(--crit)} .dial.out .prog{stroke:var(--crit)}
+@keyframes pulse{50%{opacity:.45}}
+.banner{display:none;margin-top:6px;font:700 13px var(--body);letter-spacing:.08em;text-transform:uppercase;color:var(--ink);background:var(--crit);padding:4px 10px;border-radius:6px}
+.dial.out .banner{display:block}
+
+/* controls */
+.deck{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.btn{height:58px;border-radius:12px;border:1px solid var(--line);background:var(--plate);color:var(--chalk);font:600 14px var(--body);cursor:pointer;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;line-height:1.15;padding:0 4px}
+.btn small{font:500 11px var(--body);color:var(--mute)}
+.btn:disabled{opacity:.35;cursor:not-allowed}
+.btn.primary{grid-column:span 2;background:var(--cue);border-color:var(--cue);color:var(--ink);font:700 19px var(--body);height:64px}
+.btn.primary small{color:#5a3f08}
+.btn.ext-btn{border-color:var(--cue);color:var(--cue)}
+.btn:active:not(:disabled){transform:scale(.97)}
+.btn:focus-visible,.sbtn:focus-visible,.icon-btn:focus-visible,.dial:focus-visible,.seg button:focus-visible{outline:2px solid var(--cue);outline-offset:2px}
+.span2{grid-column:span 2}
+.icon-btn.mic[aria-pressed="true"]{background:var(--crit);border-color:var(--crit);color:#fff}
+.heard{display:flex;align-items:center;gap:10px;background:var(--plate);border:1px solid var(--line);border-radius:10px;padding:8px 12px;font-size:14px;min-width:0}
+.heard[hidden]{display:none}
+.heard #heardText{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.heard.hit{border-color:var(--ok)} .heard.hit #heardText{color:var(--ok)}
+.heard.err{border-color:var(--crit)} .heard.err #heardText{color:var(--crit);white-space:normal}
+.live-dot{width:9px;height:9px;border-radius:50%;background:var(--crit);flex:none;animation:pulse 1.2s infinite}
+.heard.err .live-dot{animation:none;background:var(--line)}
+.dict{display:flex;align-items:center;gap:10px;background:var(--plate);border:1px solid var(--line);border-radius:12px;padding:0 12px;min-width:0;cursor:text}
+.dict:focus-within{border-color:var(--cue)}
+.dict-ico{font-size:18px;flex:none}
+.dict input{flex:1;min-width:0;height:46px;background:transparent;border:0;outline:none;color:var(--chalk);font:500 16px var(--body)}
+.dict input::placeholder{color:var(--mute)}
+.btn.wide{grid-column:1/-1;height:48px;flex-direction:row;gap:10px}
+
+/* settings */
+.settings{background:var(--plate);border-radius:12px;padding:12px 14px;display:flex;flex-wrap:wrap;align-items:center;gap:10px 16px;font-size:13px;color:var(--mute)}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:9px;overflow:hidden}
+.seg button{background:transparent;border:0;color:var(--mute);font:600 13px var(--body);padding:7px 11px;cursor:pointer;font-variant-numeric:tabular-nums}
+.seg button[aria-pressed="true"]{background:var(--cue);color:var(--ink)}
+.rules{font-size:12px;line-height:1.55;color:var(--mute);max-width:65ch}
+.rules b{color:var(--chalk);font-weight:600}
+kbd{font:600 11px var(--body);border:1px solid var(--line);border-radius:4px;padding:0 4px;color:var(--chalk)}
+@media (max-width:420px){
+  .deck{grid-template-columns:repeat(2,1fr)}
+  .btn.primary{grid-column:span 2}
+  .score{font-size:44px}
+}
+@media (prefers-reduced-motion:reduce){.dial.crit.running .secs{animation:none}.prog{transition:none}}
+</style>
+
+<div class="app">
+  <header>
+    <div class="brand"><b>WNT</b> · Shot Clock</div>
+    <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center">
+      <span class="seg" id="langSeg" aria-label="Ngôn ngữ nhận lệnh"><button data-l="vi-VN" aria-pressed="true">VI</button><button data-l="en-US" aria-pressed="false">EN</button></span>
+      <button class="icon-btn mic" id="micBtn" aria-pressed="false">🎙 Nghe lệnh</button>
+      <button class="icon-btn" id="soundBtn" aria-pressed="true">🔊 Âm thanh</button>
+    </div>
+  </header>
+
+  <label class="dict" for="cmdInput">
+    <span class="dict-ico" aria-hidden="true">🎤</span>
+    <input id="cmdInput" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="go"
+      placeholder="Chạm vào đây, bấm 🎤 trên bàn phím rồi nói lệnh">
+  </label>
+  <div class="heard" id="heard" hidden><span class="live-dot"></span><span id="heardText">Đang nghe…</span></div>
+
+  <section class="players" id="players"></section>
+
+  <div class="clock-wrap">
+    <button class="dial" id="dial" aria-label="Chạm để bắt đầu hoặc tạm dừng">
+      <svg viewBox="0 0 200 200" aria-hidden="true">
+        <g class="ticks" id="ticks"></g>
+        <circle class="track" cx="100" cy="100" r="88"/>
+        <circle class="prog" id="prog" cx="100" cy="100" r="88"/>
+      </svg>
+      <div class="dial-inner">
+        <div class="mode" id="mode">Cú đánh · 30 giây</div>
+        <div class="secs" id="secs">30</div>
+        <div class="banner">Hết giờ · Phạm lỗi</div>
+        <div class="hint" id="hint">Chạm đồng hồ khi bi dừng hẳn</div>
+      </div>
+    </button>
+  </div>
+
+  <section class="deck">
+    <button class="btn primary" id="startBtn">Bắt đầu<small>Space</small></button>
+    <button class="btn ext-btn span2" id="extBtn">Gia hạn +30s<small>E · còn 1 lần</small></button>
+    <button class="btn" id="switchBtn">Đổi lượt<small>S · tự chạy</small></button>
+    <button class="btn" id="resetBtn">Bắn xong<small>R · đặt lại, tự chạy</small></button>
+    <button class="btn" id="pushBtn">Push out<small>P · đối thủ 60s</small></button>
+    <button class="btn" id="longBtn">Khai cuộc<small>60 giây</small></button>
+    <button class="btn span2" id="undoBtn">↶ Hoàn tác<small>U · trả lại thao tác vừa rồi</small></button>
+    <button class="btn span2" id="rackBtn">Ván mới<small>Reset gia hạn cả hai người</small></button>
+  </section>
+
+  <section class="settings">
+    <span>Thời gian mỗi cú:</span>
+    <span class="seg" id="durSeg">
+      <button data-d="25" aria-pressed="false">25s</button>
+      <button data-d="30" aria-pressed="true">30s</button>
+      <button data-d="45" aria-pressed="false">45s</button>
+    </span>
+    <p class="rules"><b>Luật WNT:</b> 30 giây mỗi cú, tính khi bi cuối cùng dừng hẳn. Cú đầu tiên sau khai cuộc hoặc sau push out được 60 giây. Mỗi người có 1 lần gia hạn 30 giây mỗi ván, phải gọi trong 30 giây ban đầu. Báo ở 10 và 5 giây. Hết giờ là phạm lỗi thường. Chạm vào ô người chơi để chuyển lượt.<br><b>Lệnh giọng nói / Voice commands</b> (bật Nghe lệnh, chọn VI hoặc EN):<br>
+Đổi lượt · <i>switch / next player</i> — Bắn xong · <i>reset / done</i> — Gia hạn · <i>extension</i> — Push out · <i>push out</i> — Bắt đầu · <i>start / go</i> — Dừng · <i>stop / pause</i> — Khai cuộc · <i>break</i> — Ván mới · <i>new rack</i> — Hoàn tác · <i>undo</i>.<br>Phím tắt: <kbd>Space</kbd> chạy/dừng, <kbd>E</kbd> gia hạn, <kbd>S</kbd> đổi lượt, <kbd>R</kbd> bắn xong, <kbd>P</kbd> push out.</p>
+  </section>
+</div>
+
+<script>
+(()=>{
+const $=s=>document.querySelector(s);
+const C=2*Math.PI*88;
+const prog=$('#prog');prog.style.strokeDasharray=C;
+// tick marks
+const tk=$('#ticks');
+for(let i=0;i<60;i++){const a=i/60*2*Math.PI,r1=i%5?94:92,r2=97;
+  const l=document.createElementNS('http://www.w3.org/2000/svg','line');
+  l.setAttribute('x1',100+r1*Math.cos(a));l.setAttribute('y1',100+r1*Math.sin(a));
+  l.setAttribute('x2',100+r2*Math.cos(a));l.setAttribute('y2',100+r2*Math.sin(a));tk.appendChild(l);}
+
+const load=()=>{try{return JSON.parse(localStorage.getItem('wnt-clock')||'null')}catch(e){return null}};
+const saved=load();
+const S={
+  players:saved?.players||[{name:'Người chơi 1',score:0,ext:false},{name:'Người chơi 2',score:0,ext:false}],
+  active:saved?.active??0,
+  shot:saved?.shot||30,
+  sound:saved?.sound??true,
+  total:30000, remaining:30000, endAt:0, running:false, out:false,
+  long:false, longLabel:'', extendedThisShot:false, lastBeep:null
+};
+S.total=S.remaining=S.shot*1000;
+const save=()=>{try{localStorage.setItem('wnt-clock',JSON.stringify({players:S.players,active:S.active,shot:S.shot,sound:S.sound}))}catch(e){}};
+
+/* audio */
+let ac=null;
+function beep(freq=880,dur=.12,vol=.35){
+  if(!S.sound)return;
+  try{ac=ac||new (window.AudioContext||window.webkitAudioContext)();
+    if(ac.state==='suspended')ac.resume();
+    const o=ac.createOscillator(),g=ac.createGain();o.type='square';o.frequency.value=freq;
+    g.gain.setValueAtTime(vol,ac.currentTime);g.gain.exponentialRampToValueAtTime(.001,ac.currentTime+dur);
+    o.connect(g).connect(ac.destination);o.start();o.stop(ac.currentTime+dur);}catch(e){}
+}
+function tone(freq,dur,delay=0,type='triangle',vol=.4){
+  if(!S.sound)return;
+  try{ac=ac||new (window.AudioContext||window.webkitAudioContext)();
+    if(ac.state==='suspended')ac.resume();
+    const t=ac.currentTime+delay,o=ac.createOscillator(),g=ac.createGain();
+    o.type=type;o.frequency.setValueAtTime(freq,t);
+    g.gain.setValueAtTime(.0001,t);g.gain.exponentialRampToValueAtTime(vol,t+.01);
+    g.gain.exponentialRampToValueAtTime(.0001,t+dur);
+    o.connect(g).connect(ac.destination);o.start(t);o.stop(t+dur+.02);}catch(e){}
+}
+const SFX={
+  // Đổi lượt: chuông hai nốt "ding–dong"
+  switch:()=>{tone(1047,.35,0,'sine',.45);tone(784,.5,.18,'sine',.45)},
+  // Đặt lại sau cú đánh: hai tiếng tách ngắn
+  reset:()=>{tone(1568,.07,0,'square',.22);tone(1568,.07,.11,'square',.22)},
+  // Gia hạn: ba nốt đi lên
+  ext:()=>{tone(659,.14,0,'triangle');tone(880,.14,.12,'triangle');tone(1319,.3,.24,'triangle')},
+  // Push out: ba nốt đi xuống + nốt dài
+  push:()=>{tone(1319,.12,0,'sawtooth',.2);tone(988,.12,.13,'sawtooth',.2);tone(659,.12,.26,'sawtooth',.2);tone(659,.45,.42,'sine',.4)},
+  // Khai cuộc / ván mới
+  rack:()=>{tone(523,.12,0,'sine');tone(659,.12,.1,'sine');tone(784,.12,.2,'sine');tone(1047,.35,.3,'sine')}
+};
+const buzz=ms=>{try{navigator.vibrate&&navigator.vibrate(ms)}catch(e){}};
+
+/* wake lock */
+let wl=null;
+async function keepAwake(){try{if('wakeLock' in navigator&&!wl){wl=await navigator.wakeLock.request('screen');wl.addEventListener('release',()=>wl=null)}}catch(e){}}
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')keepAwake()});
+
+/* players */
+function renderPlayers(){
+  const box=$('#players');box.innerHTML='';
+  S.players.forEach((p,i)=>{
+    const el=document.createElement('div');
+    el.className='player'+(i===S.active?' active':'');
+    el.innerHTML=`<div class="p-top"><span class="turn-dot"></span><input class="p-name" id="pname${i}" maxlength="24" aria-label="Tên người chơi ${i+1}"></div>
+      <div class="p-mid"><span class="score">${p.score}</span><span class="score-btns">
+      <button class="sbtn" data-a="dec" aria-label="Trừ điểm">−</button><button class="sbtn" data-a="inc" aria-label="Cộng điểm">+</button></span></div>
+      <div class="ext ${p.ext?'used':''}"><span class="pip">EXT</span>${p.ext?'Đã dùng gia hạn':'Còn 1 gia hạn'}</div>`;
+    const inp=el.querySelector('input');inp.value=p.name;
+    inp.addEventListener('click',e=>e.stopPropagation());
+    inp.addEventListener('input',()=>{p.name=inp.value||`Người chơi ${i+1}`;save()});
+    el.querySelectorAll('.sbtn').forEach(b=>b.addEventListener('click',e=>{e.stopPropagation();
+      p.score=Math.max(0,p.score+(b.dataset.a==='inc'?1:-1));save();renderPlayers();}));
+    el.addEventListener('click',()=>{if(i!==S.active)switchTurn(i)});
+    box.appendChild(el);
+  });
+  updateButtons();
+}
+
+/* clock */
+function setClock(ms,long,label){
+  S.running=false;S.out=false;S.total=S.remaining=ms;S.long=!!long;S.longLabel=label||'Sau khai cuộc';S.extendedThisShot=false;S.lastBeep=null;draw();
+}
+function start(quiet){
+  if(S.out||S.remaining<=0)return;
+  S.running=true;S.endAt=performance.now()+S.remaining;keepAwake();if(!quiet)beep(1200,.05,.2);loop();
+}
+function pause(){if(!S.running)return;S.remaining=Math.max(0,S.endAt-performance.now());S.running=false;draw();}
+function toggle(){if(S.out){switchTurn();return}S.running?pause():start();}
+function loop(){
+  if(!S.running)return;
+  S.remaining=Math.max(0,S.endAt-performance.now());
+  const s=Math.ceil(S.remaining/1000);
+  if(s!==S.lastBeep){
+    if(s===10){beep(880,.18);buzz(120)}
+    else if(s<=5&&s>=1){beep(s===1?1100:990,.12);buzz(60)}
+    S.lastBeep=s;
+  }
+  if(S.remaining<=0){S.running=false;S.out=true;beep(440,.9,.45);buzz([300,100,300]);draw();return}
+  draw();requestAnimationFrame(loop);
+}
+function extend(){
+  const p=S.players[S.active];
+  if(p.ext||S.out||S.extendedThisShot)return;snap();
+  p.ext=true;S.extendedThisShot=true;
+  if(S.running)S.endAt+=30000;S.remaining+=30000;S.total=Math.max(S.total,S.remaining);
+  S.lastBeep=null;SFX.ext();buzz(80);save();renderPlayers();draw();
+}
+function switchTurn(i){
+snap();  S.active=(i===undefined)?1-S.active:i;save();setClock(S.shot*1000);renderPlayers();
+  SFX.switch();start(true);
+}
+// Bắn xong, vẫn lượt người đó: đặt lại thời gian và chạy luôn
+function resetShot(){
+snap();  setClock(S.shot*1000);SFX.reset();start(true);
+}
+// Push out: đối thủ nhận lượt, có 60 giây
+function pushOut(){
+snap();  S.active=1-S.active;save();setClock(60000,true,'Sau push out');renderPlayers();
+  SFX.push();start(true);
+}
+function afterBreak(){snap();setClock(60000,true,'Sau khai cuộc');SFX.rack();}
+function newRack(){snap();S.players.forEach(p=>p.ext=false);save();setClock(60000,true,'Sau khai cuộc');renderPlayers();SFX.rack();}
+
+function draw(){
+  const s=Math.ceil(S.remaining/1000);
+  $('#secs').textContent=s;
+  const frac=S.total?S.remaining/S.total:0;
+  prog.style.strokeDashoffset=C*(1-frac);
+  const d=$('#dial');
+  d.classList.toggle('running',S.running);
+  d.classList.toggle('out',S.out);
+  d.classList.toggle('crit',!S.out&&s<=5);
+  d.classList.toggle('warn',!S.out&&s>5&&s<=10);
+  $('#mode').textContent=S.extendedThisShot?'Đã gia hạn · +30 giây':(S.long?`${S.longLabel} · 60 giây`:`Cú đánh · ${S.shot} giây`);
+  $('#hint').textContent=S.out?'Chạm để chuyển lượt, đồng hồ chạy ngay':S.running?'Chạm để dừng khi cơ chạm bi':(S.remaining<S.total?'Đang tạm dừng · chạm để chạy tiếp':'Chạm đồng hồ khi bi dừng hẳn');
+  const sb=$('#startBtn');
+  sb.firstChild.textContent=S.out?'Chuyển lượt':S.running?'Dừng':(S.remaining<S.total?'Tiếp tục':'Bắt đầu');
+  updateButtons();
+}
+function updateButtons(){
+  const p=S.players[S.active];const eb=$('#extBtn');
+  eb.disabled=p.ext||S.out||S.extendedThisShot;
+  eb.querySelector('small').textContent=p.ext?`E · ${p.name} đã dùng`:`E · ${p.name} còn 1 lần`;
+}
+
+/* settings */
+document.querySelectorAll('#durSeg button').forEach(b=>{
+  b.setAttribute('aria-pressed',+b.dataset.d===S.shot);
+  b.addEventListener('click',()=>{S.shot=+b.dataset.d;
+    document.querySelectorAll('#durSeg button').forEach(x=>x.setAttribute('aria-pressed',x===b));
+    save();if(!S.running&&!S.long)setClock(S.shot*1000);});
+});
+const sbt=$('#soundBtn');
+const paintSound=()=>{sbt.setAttribute('aria-pressed',S.sound);sbt.textContent=(S.sound?'🔊':'🔇')+' Âm thanh'};
+paintSound();
+sbt.addEventListener('click',()=>{S.sound=!S.sound;paintSound();save();if(S.sound)beep(1000,.06,.2)});
+
+$('#dial').addEventListener('click',toggle);
+$('#startBtn').addEventListener('click',toggle);
+$('#extBtn').addEventListener('click',extend);
+$('#switchBtn').addEventListener('click',()=>switchTurn());
+$('#resetBtn').addEventListener('click',resetShot);
+$('#pushBtn').addEventListener('click',pushOut);
+$('#longBtn').addEventListener('click',afterBreak);
+$('#rackBtn').addEventListener('click',newRack);
+$('#undoBtn').addEventListener('click',undo);
+document.addEventListener('keydown',e=>{
+  if(e.target.tagName==='INPUT')return;
+  const k=e.key.toLowerCase();
+  if(k===' '){e.preventDefault();toggle()}
+  else if(k==='e')extend();else if(k==='s')switchTurn();
+  else if(k==='r')resetShot();else if(k==='u')undo();else if(k==='p')pushOut();
+});
+
+
+/* ===== Điều khiển bằng giọng nói ===== */
+const fold=t=>t.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/đ/g,'d').replace(/[^a-z0-9 ]/g,' ').replace(/\s+/g,' ').trim();
+const COMMANDS=[
+  {name:'Gia hạn',     keys:['gia han','them gio','them 30','extension','extend','extra time','time extension','ex ten','ech ten','ich ten'], run:()=>extend()},
+  {name:'Push out',    keys:['push out','pushout','push','pus out','pud out','bus out','bush out','put out','pout','pao','pu sao','pu ao','pus ao','but ao'], run:()=>pushOut()},
+  {name:'Đổi lượt',    keys:['doi luot','chuyen luot','doi nguoi','het luot','doi ben','doi','switch','swap','change','change player','next player','your turn','turn over','other player','sui','suyt'], run:()=>switchTurn()},
+  {name:'Hoàn tác',    keys:['hoan tac','quay lai','nham roi','sai roi','undo','go back','cancel'], run:()=>undo()},
+  {name:'Bắn xong',    keys:['ban xong','dat lai','tinh lai','danh tiep','tiep tuc danh','xong','reset','resets','ri set','ri sat','ri xet','ri sec','di set','di sat','re set','ree set','riset','rizet','giri set','reset lai','shot done','done','again','next shot','continue','one more'], run:()=>resetShot()},
+  {name:'Ván mới',     keys:['van moi','van khac','game moi','new rack','new game','next rack','next game','rack'], run:()=>newRack()},
+  {name:'Khai cuộc',   keys:['khai cuoc','sau khai','pha bi','60 giay','sau muoi giay','break','after break','break shot','sixty','60 seconds','brake','bray'], run:()=>afterBreak()},
+  {name:'Dừng',        keys:['dung lai','tam dung','dung','stop','pause','hold','wait','xtop','top','stop clock','stop the clock'], run:()=>pause()},
+  {name:'Bắt đầu',     keys:['bat dau','chay','tinh gio','bam gio','start','go','begin','run','start clock','start the clock','xtat','sta'], run:()=>{if(S.out)return;start()}},
+];
+// lệnh dài kiểm tra trước để "đổi lượt" không bị bắt nhầm thành "đổi"
+const FLAT=COMMANDS.flatMap(c=>c.keys.map(k=>({k,c}))).sort((a,b)=>b.k.length-a.k.length);
+// Lấy lệnh nằm CUỐI câu (lệnh vừa nói), không phải lệnh dài nhất.
+function matchCmd(text){
+  const t=' '+fold(text)+' ';
+  let best=null,bestEnd=-1,bestLen=0;
+  for(const {k,c} of FLAT){
+    const pos=t.lastIndexOf(' '+k+' ');if(pos<0)continue;
+    const end=pos+k.length+1;
+    if(end>bestEnd||(end===bestEnd&&k.length>bestLen)){best=c;bestEnd=end;bestLen=k.length}
+  }
+  return best;
+}
+let recLang='vi-VN';try{recLang=localStorage.getItem('wnt-lang')||'vi-VN'}catch(e){}
+const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+const heard=$('#heard'),heardText=$('#heardText'),micBtn=$('#micBtn');
+let rec=null,listening=false,handled=new Set(),lastFire=0,lastText='',lastTextAt=0;
+// Trả về phần chữ mới so với câu đã xử lý trước đó (Chrome Android hay gộp câu cũ vào câu mới)
+function freshPart(transcript){
+  const f=fold(transcript);
+  if(lastText&&f.startsWith(lastText)){
+    const rest=f.slice(lastText.length).trim();
+    if(rest)return rest;
+    return performance.now()-lastTextAt<3000?'':f; // cùng một câu lặp lại ngay → bỏ qua
+  }
+  return f;
+}
+function fire(cmd,said,transcript){
+  lastFire=performance.now();lastText=fold(transcript);lastTextAt=lastFire;
+  cmd.run();showHeard(`✓ ${cmd.name}  ·  “${said}”`,'hit');buzz(40);
+}
+function showHeard(text,cls){heard.hidden=false;heard.className='heard'+(cls?' '+cls:'');heardText.textContent=text;}
+function micOff(msg){
+  listening=false;micBtn.setAttribute('aria-pressed','false');micBtn.textContent='🎙 Nghe lệnh';
+  try{rec&&rec.abort()}catch(e){}
+  if(msg)showHeard(msg,'err');else heard.hidden=true;
+}
+function micOn(){
+  if(!SR){showHeard('Trình duyệt này không nghe liên tục được. Hãy dùng ô 🎤 phía trên với micro của bàn phím.','err');return}
+  if(!rec){
+    rec=new SR();rec.lang=recLang;rec.continuous=true;rec.interimResults=true;rec.maxAlternatives=3;
+    rec.onresult=e=>{
+      for(let i=e.resultIndex;i<e.results.length;i++){
+        const r=e.results[i];const said=r[0].transcript.trim();
+        if(handled.has(i)){continue}
+        let cmd=matchCmd(freshPart(r[0].transcript)),src=r[0].transcript;
+        // phương án nghe khác chỉ dùng khi câu đã chốt và phương án chính không ra lệnh nào
+        for(let a=1;r.isFinal&&!cmd&&a<r.length;a++){cmd=matchCmd(freshPart(r[a].transcript));src=r[a].transcript}
+        if(cmd&&performance.now()-lastFire>1200){
+          handled.add(i);fire(cmd,said,src);
+        }else if(r.isFinal&&!cmd){showHeard(`“${said}” · không phải lệnh`)}
+        else if(!cmd){showHeard(`… ${said}`)}
+      }
+    };
+    rec.onerror=e=>{
+      if(e.error==='not-allowed'||e.error==='service-not-allowed'){
+        micOff('Trang này không được dùng micro trực tiếp. Hãy dùng ô 🎤 phía trên: chạm vào ô, bấm micro trên bàn phím rồi nói lệnh.');
+      }else if(e.error==='network'){micOff('Nhận giọng nói cần có mạng internet.')}
+      else if(e.error==='audio-capture'){micOff('Không tìm thấy micro trên thiết bị.')}
+    };
+    rec.onend=()=>{handled=new Set();lastText='';if(listening){try{rec.start()}catch(e){setTimeout(()=>listening&&rec.start(),300)}}};
+  }
+  listening=true;micBtn.setAttribute('aria-pressed','true');micBtn.textContent='🎙 Đang nghe';
+  showHeard(recLang==='vi-VN'?'Đang nghe… nói “đổi lượt”, “switch”, “gia hạn”, “push out”…':'Listening… say “switch”, “reset”, “extension”, “push out”…');
+  try{rec.start()}catch(e){}
+  keepAwake();tone(1320,.08,0,'sine',.25);
+}
+micBtn.addEventListener('click',()=>listening?micOff():micOn());
+/* Ô nhập lệnh: dùng micro của bàn phím điện thoại (Gboard, bàn phím iPhone) */
+const cmdInput=$('#cmdInput');let dictTimer=null;
+function tryDict(final){
+  const said=cmdInput.value.trim();if(!said)return;
+  const cmd=matchCmd(said);
+  if(cmd){
+    clearTimeout(dictTimer);
+    if(performance.now()-lastFire>900){lastFire=performance.now();cmd.run();showHeard(`✓ ${cmd.name}  ·  “${said}”`,'hit');buzz(40);}
+    // xoá sau một nhịp để bàn phím kết thúc câu đọc, giữ ô được chọn để nói lệnh tiếp
+    setTimeout(()=>{cmdInput.value=''},400);
+  }else if(final){showHeard(`“${said}” · không phải lệnh`);cmdInput.value='';}
+}
+cmdInput.addEventListener('input',()=>{tryDict(false);clearTimeout(dictTimer);dictTimer=setTimeout(()=>tryDict(true),1800);});
+cmdInput.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();tryDict(true)}});
+document.querySelectorAll('#langSeg button').forEach(b=>{
+  b.setAttribute('aria-pressed',b.dataset.l===recLang);
+  b.addEventListener('click',()=>{
+    recLang=b.dataset.l;try{localStorage.setItem('wnt-lang',recLang)}catch(e){}
+    document.querySelectorAll('#langSeg button').forEach(x=>x.setAttribute('aria-pressed',x===b));
+    if(rec){rec.lang=recLang;if(listening){try{rec.abort()}catch(e){}}} // onend tự khởi động lại với ngôn ngữ mới
+    if(listening)showHeard(recLang==='vi-VN'?'Đang nghe tiếng Việt (vẫn hiểu lệnh tiếng Anh phổ biến)':'Listening in English (Vietnamese commands may not be recognised)');
+  });
+});
+document.addEventListener('keydown',e=>{if(e.target.tagName!=='INPUT'&&e.key.toLowerCase()==='m')micBtn.click()});
+
+renderPlayers();draw();
+})();
+</script>
+</body></html>
